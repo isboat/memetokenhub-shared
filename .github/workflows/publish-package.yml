@@ -1,60 +1,52 @@
-name: Publish GitHub Package
+name: Build and Publish to GitHub Packages
 
 on:
   push:
     branches:
       - main
-
-permissions:
-  contents: write
-  packages: write
+  pull_request:
+    branches:
+      - main
 
 concurrency:
-  group: publish-package
-  cancel-in-progress: false
+  group: publish-package-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    env:
-      NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+    permissions:
+      contents: read
+    outputs:
+      package-version: ${{ steps.version.outputs.value }}
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-          source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
 
-      - name: Validate package credentials
-        shell: bash
-        run: |
-          if [[ -z "$NUGET_AUTH_TOKEN" ]]; then
-            echo "Configure the PACKAGES_TOKEN repository secret with a classic PAT that has write:packages scope." >&2
-            exit 1
-          fi
-
-      - name: Validate release version
+      - name: Generate package version
         id: version
         shell: bash
         run: |
-          version="$(dotnet msbuild src/MemeTokenHub.Shared/MemeTokenHub.Shared.csproj -getProperty:Version -nologo)"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "The project Version must be a semantic version such as 1.2.3 or 1.2.3-preview.1." >&2
-            exit 1
-          fi
-          if git show-ref --verify --quiet "refs/tags/v$version"; then
-            echo "Release tag v$version already exists. Increment Version in the project before merging to main." >&2
-            exit 1
-          fi
-          echo "value=$version" >> "$GITHUB_OUTPUT"
+          project_version="$(dotnet msbuild src/MemeTokenHub.Shared/MemeTokenHub.Shared.csproj -getProperty:Version -nologo)"
+          version_prefix="$(cut -d. -f1-2 <<< "$project_version")"
 
-      - name: Restore
-        run: dotnet restore MemeTokenHub.Shared.sln
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            package_version="${version_prefix}.${{ github.run_number }}"
+          else
+            package_version="${version_prefix}.${{ github.run_number }}-preview"
+          fi
+
+          echo "value=$package_version" >> "$GITHUB_OUTPUT"
+          echo "Generated package version: $package_version"
+
+      - name: Restore dependencies
+        run: dotnet restore MemeTokenHub.Shared.sln --configfile NuGet.config
 
       - name: Build
         run: >-
@@ -64,10 +56,7 @@ jobs:
           -p:Version=${{ steps.version.outputs.value }}
           -p:ContinuousIntegrationBuild=true
 
-      - name: Test
-        run: dotnet test MemeTokenHub.Shared.sln --configuration Release --no-build
-
-      - name: Pack release
+      - name: Pack NuGet package
         run: >-
           dotnet pack src/MemeTokenHub.Shared/MemeTokenHub.Shared.csproj
           --configuration Release
@@ -76,22 +65,104 @@ jobs:
           -p:PackageVersion=${{ steps.version.outputs.value }}
           -p:ContinuousIntegrationBuild=true
 
-      - name: Publish to GitHub Packages
-        env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.value }}
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore MemeTokenHub.Shared.sln --configfile NuGet.config
+
+      - name: Run unit tests
         run: >-
-          dotnet nuget push "artifacts/MemeTokenHub.Shared.${PACKAGE_VERSION}.nupkg"
+          dotnet test MemeTokenHub.Shared.sln
+          --configuration Release
+          --no-restore
+          --verbosity normal
+          --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: "**/test-results.trx"
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - test
+    permissions:
+      contents: write
+      packages: write
+    env:
+      NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-package
+          path: artifacts/
+
+      - name: Validate package credentials
+        shell: bash
+        run: |
+          if [[ -z "$NUGET_AUTH_TOKEN" ]]; then
+            echo "Configure the PACKAGES_TOKEN repository secret with a classic PAT that has write:packages scope." >&2
+            exit 1
+          fi
+
+      - name: Publish to GitHub Packages
+        run: >-
+          dotnet nuget push "artifacts/*.nupkg"
           --api-key "$NUGET_AUTH_TOKEN"
-          --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          --source github
+          --configfile NuGet.config
           --skip-duplicate
 
       - name: Create GitHub release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.*nupkg
+          tag_name: v${{ needs.build.outputs.package-version }}
+          name: v${{ needs.build.outputs.package-version }}
+          generate_release_notes: true
+          body: |
+            ## MemeTokenHub.Shared package release
+
+            Version: ${{ needs.build.outputs.package-version }}
+
+            Built from commit `${{ github.sha }}` on `${{ github.ref_name }}`.
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.version.outputs.value }}
-        run: >-
-          gh release create "v${RELEASE_VERSION}"
-          artifacts/*.nupkg
-          --target "$GITHUB_SHA"
-          --title "v${RELEASE_VERSION}"
-          --generate-notes
+          GITHUB_TOKEN: ${{ github.token }}
