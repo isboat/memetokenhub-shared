@@ -20,6 +20,7 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+          source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
 
       - name: Validate release version
         id: version
@@ -55,9 +56,19 @@ jobs:
           -p:PackageVersion=${{ steps.version.outputs.value }}
           -p:ContinuousIntegrationBuild=true
 
+      - name: Validate package credentials
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "$NUGET_AUTH_TOKEN" ]]; then
+            echo "Configure the PACKAGES_TOKEN repository secret with a classic PAT that has write:packages scope." >&2
+            exit 1
+          fi
+
       - name: Publish to GitHub Packages
         env:
-          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
           PACKAGE_VERSION: ${{ steps.version.outputs.value }}
         run: >-
           dotnet nuget push "artifacts/MemeTokenHub.Shared.${PACKAGE_VERSION}.nupkg"
