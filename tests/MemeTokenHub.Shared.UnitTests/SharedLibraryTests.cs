@@ -10,6 +10,7 @@ using MemeTokenHub.Shared.Exceptions;
 using MemeTokenHub.Shared.Extensions;
 using MemeTokenHub.Shared.Messaging;
 using MemeTokenHub.Shared.Telemetry;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
@@ -135,6 +136,30 @@ public sealed class MessagingTests
         var results = await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => store.TryBeginAsync(id)));
         Assert.That(results.Count(x => x), Is.EqualTo(1));
     }
+
+    [Test]
+    public async Task ProcessedEventStore_AllowsRetryAfterAbandonment()
+    {
+        var store = new InMemoryProcessedEventStore();
+        var id = Guid.NewGuid();
+
+        Assert.That(await store.TryBeginAsync(id), Is.True);
+        await store.AbandonAsync(id);
+
+        Assert.That(await store.TryBeginAsync(id), Is.True);
+    }
+
+    [Test]
+    public async Task ProcessedEventStore_RejectsRedeliveryOnlyAfterCompletion()
+    {
+        var store = new InMemoryProcessedEventStore();
+        var id = Guid.NewGuid();
+
+        Assert.That(await store.TryBeginAsync(id), Is.True);
+        await store.CompleteAsync(id);
+
+        Assert.That(await store.TryBeginAsync(id), Is.False);
+    }
 }
 
 [TestFixture]
@@ -220,6 +245,28 @@ public sealed class InfrastructureTests
         Assert.That(provider.GetRequiredService<IProcessedEventStore>(), Is.TypeOf<DurableProcessedEventStore>());
     }
 
+    [Test]
+    public void AuthenticationRegistration_UsesTheDiTimeProviderForBearerValidation()
+    {
+        var future = new DateTimeOffset(2040, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Jwt:SecretKey"] = "a-development-key-that-is-at-least-32-bytes-long",
+            ["Jwt:Issuer"] = "mth-tests",
+            ["Jwt:Audience"] = "mth-services",
+            ["Jwt:ClockSkewMinutes"] = "0"
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddMemeTokenHubAuthentication(configuration);
+        services.AddSingleton<TimeProvider>(new TestTimeProvider(future));
+
+        using var provider = services.BuildServiceProvider();
+        var bearer = provider.GetRequiredService<IOptionsMonitor<JwtBearerOptions>>().Get(JwtBearerDefaults.AuthenticationScheme);
+
+        Assert.That(bearer.TokenValidationParameters.LifetimeValidator!(
+            future.UtcDateTime, future.AddMinutes(1).UtcDateTime, null!, bearer.TokenValidationParameters), Is.True);
+    }
+
     private sealed record StringIdDocument([property: BsonId] string Id);
     private sealed record ObjectIdRepresentedDocument([property: BsonId, BsonRepresentation(BsonType.ObjectId)] string Id);
     private sealed record ObjectIdDocument([property: BsonId] ObjectId Id);
@@ -227,6 +274,13 @@ public sealed class InfrastructureTests
     private sealed class DurableProcessedEventStore : IProcessedEventStore
     {
         public Task<bool> TryBeginAsync(Guid eventId, CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task CompleteAsync(Guid eventId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task AbandonAsync(Guid eventId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }
 

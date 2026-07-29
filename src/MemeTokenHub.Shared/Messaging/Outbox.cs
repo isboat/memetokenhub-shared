@@ -13,17 +13,48 @@ public interface IOutboxStore
 
 public interface IProcessedEventStore
 {
+    /// <summary>Atomically reserves an event for processing, returning false when it is already in flight or complete.</summary>
     Task<bool> TryBeginAsync(Guid eventId, CancellationToken cancellationToken = default);
+
+    /// <summary>Marks a reserved event complete after its handler effects have been committed durably.</summary>
+    Task CompleteAsync(Guid eventId, CancellationToken cancellationToken = default);
+
+    /// <summary>Releases a reservation after handler failure so a later delivery can retry it.</summary>
+    Task AbandonAsync(Guid eventId, CancellationToken cancellationToken = default);
 }
 
 public sealed class InMemoryProcessedEventStore : IProcessedEventStore
 {
+    private readonly HashSet<Guid> _inFlight = [];
     private readonly HashSet<Guid> _processed = [];
     private readonly object _lock = new();
+
     public Task<bool> TryBeginAsync(Guid eventId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_lock) return Task.FromResult(_processed.Add(eventId));
+        lock (_lock)
+        {
+            if (_processed.Contains(eventId) || !_inFlight.Add(eventId)) return Task.FromResult(false);
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task CompleteAsync(Guid eventId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_lock)
+        {
+            if (!_inFlight.Remove(eventId)) throw new InvalidOperationException($"Event {eventId} is not being processed.");
+            _processed.Add(eventId);
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task AbandonAsync(Guid eventId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_lock) _inFlight.Remove(eventId);
+        return Task.CompletedTask;
     }
 }
 
