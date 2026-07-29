@@ -1,13 +1,17 @@
 name: Publish GitHub Package
 
 on:
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - main
 
 permissions:
-  contents: read
+  contents: write
   packages: write
+
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -15,6 +19,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
@@ -26,9 +32,13 @@ jobs:
         id: version
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$(dotnet msbuild src/MemeTokenHub.Shared/MemeTokenHub.Shared.csproj -getProperty:Version -nologo)"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must be a semantic version such as v1.2.3 or v1.2.3-preview.1." >&2
+            echo "The project Version must be a semantic version such as 1.2.3 or 1.2.3-preview.1." >&2
+            exit 1
+          fi
+          if git rev-parse "v$version" >/dev/null 2>&1; then
+            echo "Release tag v$version already exists. Increment Version in the project before merging to main." >&2
             exit 1
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
@@ -75,3 +85,14 @@ jobs:
           --api-key "$NUGET_AUTH_TOKEN"
           --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
           --skip-duplicate
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          gh release create "v${RELEASE_VERSION}"
+          artifacts/*.nupkg
+          --target "$GITHUB_SHA"
+          --title "v${RELEASE_VERSION}"
+          --generate-notes
