@@ -1,4 +1,6 @@
 using MongoDB.Bson;
+using MongoDB.Bson.IO;
+using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
 
 namespace MemeTokenHub.Shared.Data;
@@ -49,11 +51,25 @@ public class BaseRepository<T> : IBaseRepository<T> where T : class
         return result.DeletedCount > 0;
     }
 
-    private static FilterDefinition<T> IdFilter(string id)
+    internal static FilterDefinition<T> IdFilter(string id)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
-        return ObjectId.TryParse(id, out var objectId)
-            ? Builders<T>.Filter.Eq("_id", objectId)
-            : Builders<T>.Filter.Eq("_id", id);
+        var idMember = BsonClassMap.LookupClassMap(typeof(T)).IdMemberMap
+            ?? throw new InvalidOperationException($"{typeof(T).Name} does not define a BSON ID member.");
+        var serializer = idMember.GetSerializer();
+        object idValue = serializer.ValueType == typeof(ObjectId)
+            ? ObjectId.Parse(id)
+            : serializer.ValueType == typeof(Guid)
+                ? Guid.Parse(id)
+                : id;
+        var document = new BsonDocument();
+        using (var writer = new BsonDocumentWriter(document))
+        {
+            writer.WriteStartDocument();
+            writer.WriteName("_id");
+            serializer.Serialize(BsonSerializationContext.CreateRoot(writer), idValue);
+            writer.WriteEndDocument();
+        }
+        return new BsonDocumentFilterDefinition<T>(document);
     }
 }

@@ -16,6 +16,7 @@ public sealed class ProblemDetailsMiddleware(RequestDelegate next, ILogger<Probl
         catch (Exception exception)
         {
             logger.LogError(exception, "Request failed with trace ID {TraceId}", Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier);
+            if (context.Response.HasStarted) throw;
             await WriteProblemAsync(context, exception, environment.IsDevelopment()).ConfigureAwait(false);
         }
     }

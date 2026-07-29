@@ -11,10 +11,17 @@ using MemeTokenHub.Shared.Extensions;
 using MemeTokenHub.Shared.Messaging;
 using MemeTokenHub.Shared.Telemetry;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
+using MongoDB.Bson.Serialization.Attributes;
+using MongoDB.Driver;
 
 namespace MemeTokenHub.Shared.UnitTests;
 
@@ -58,6 +65,23 @@ public sealed class JwtTokenServiceTests
     {
         var service = new JwtTokenService(Microsoft.Extensions.Options.Options.Create(Options with { SecretKey = "too-short" }));
         Assert.That(() => service.GenerateToken("user-1", UserRoles.Authenticated), Throws.TypeOf<InvalidOperationException>());
+    }
+
+    [Test]
+    public void ValidateToken_UsesInjectedClockForLifetimeValidation()
+    {
+        var clock = new TestTimeProvider(new DateTimeOffset(2040, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var service = new JwtTokenService(Microsoft.Extensions.Options.Options.Create(Options), clock);
+        var token = service.GenerateToken("future-user", UserRoles.Authenticated);
+
+        var principal = service.ValidateToken(token);
+
+        Assert.That(principal.FindFirstValue(ClaimTypes.NameIdentifier), Is.EqualTo("future-user"));
+    }
+
+    private sealed class TestTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }
 
@@ -142,6 +166,71 @@ public sealed class ContractTests
 }
 
 [TestFixture]
+public sealed class InfrastructureTests
+{
+    [Test]
+    public void IdFilter_PreservesStringBsonTypeForHexadecimalIds()
+    {
+        const string id = "abcdefabcdefabcdefabcdef";
+        var filter = MemeTokenHub.Shared.Data.BaseRepository<StringIdDocument>.IdFilter(id);
+        var rendered = filter.Render(new RenderArgs<StringIdDocument>(
+            BsonSerializer.SerializerRegistry.GetSerializer<StringIdDocument>(), BsonSerializer.SerializerRegistry));
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(rendered["_id"].BsonType, Is.EqualTo(BsonType.String));
+            Assert.That(rendered["_id"].AsString, Is.EqualTo(id));
+        });
+    }
+
+    [Test]
+    public void IdFilter_HonorsConfiguredObjectIdRepresentation()
+    {
+        const string id = "abcdefabcdefabcdefabcdef";
+        var filter = MemeTokenHub.Shared.Data.BaseRepository<ObjectIdRepresentedDocument>.IdFilter(id);
+        var rendered = filter.Render(new RenderArgs<ObjectIdRepresentedDocument>(
+            BsonSerializer.SerializerRegistry.GetSerializer<ObjectIdRepresentedDocument>(), BsonSerializer.SerializerRegistry));
+
+        Assert.That(rendered["_id"].BsonType, Is.EqualTo(BsonType.ObjectId));
+    }
+
+    [Test]
+    public void IdFilter_ConvertsTextForAnObjectIdMember()
+    {
+        const string id = "abcdefabcdefabcdefabcdef";
+        var filter = MemeTokenHub.Shared.Data.BaseRepository<ObjectIdDocument>.IdFilter(id);
+        var rendered = filter.Render(new RenderArgs<ObjectIdDocument>(
+            BsonSerializer.SerializerRegistry.GetSerializer<ObjectIdDocument>(), BsonSerializer.SerializerRegistry));
+
+        Assert.That(rendered["_id"].AsObjectId, Is.EqualTo(ObjectId.Parse(id)));
+    }
+
+    [Test]
+    public void ServiceBusRegistration_UsesTheRequiredServiceOwnedStore()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ServiceBus:ConnectionString"] = "Endpoint=sb://localhost/;SharedAccessKeyName=test;SharedAccessKey=YWJjZA=="
+        }).Build();
+        var services = new ServiceCollection();
+
+        services.AddMemeTokenHubServiceBus<DurableProcessedEventStore>(configuration);
+
+        using var provider = services.BuildServiceProvider();
+        Assert.That(provider.GetRequiredService<IProcessedEventStore>(), Is.TypeOf<DurableProcessedEventStore>());
+    }
+
+    private sealed record StringIdDocument([property: BsonId] string Id);
+    private sealed record ObjectIdRepresentedDocument([property: BsonId, BsonRepresentation(BsonType.ObjectId)] string Id);
+    private sealed record ObjectIdDocument([property: BsonId] ObjectId Id);
+
+    private sealed class DurableProcessedEventStore : IProcessedEventStore
+    {
+        public Task<bool> TryBeginAsync(Guid eventId, CancellationToken cancellationToken = default) => Task.FromResult(true);
+    }
+}
+
+[TestFixture]
 public sealed class MiddlewareTests
 {
     [Test]
@@ -176,11 +265,34 @@ public sealed class MiddlewareTests
         Assert.That(context.Response.Headers[CorrelationHeaders.CorrelationId].ToString(), Is.EqualTo("request-123"));
     }
 
+    [Test]
+    public void ProblemMiddleware_RethrowsWhenResponseHasStarted()
+    {
+        var context = new DefaultHttpContext();
+        context.Features.Set<IHttpResponseFeature>(new StartedResponseFeature());
+        var middleware = new ProblemDetailsMiddleware(_ => throw new InvalidOperationException("original failure"),
+            NullLogger<ProblemDetailsMiddleware>.Instance, new TestEnvironment());
+
+        Assert.That(async () => await middleware.InvokeAsync(context),
+            Throws.TypeOf<InvalidOperationException>().With.Message.EqualTo("original failure"));
+    }
+
     private sealed class TestEnvironment : IHostEnvironment
     {
         public string EnvironmentName { get; set; } = Environments.Production;
         public string ApplicationName { get; set; } = "Tests";
         public string ContentRootPath { get; set; } = "/";
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    private sealed class StartedResponseFeature : IHttpResponseFeature
+    {
+        public int StatusCode { get; set; } = StatusCodes.Status200OK;
+        public string? ReasonPhrase { get; set; }
+        public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
+        public Stream Body { get; set; } = Stream.Null;
+        public bool HasStarted => true;
+        public void OnStarting(Func<object, Task> callback, object state) { }
+        public void OnCompleted(Func<object, Task> callback, object state) { }
     }
 }

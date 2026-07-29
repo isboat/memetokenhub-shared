@@ -55,19 +55,31 @@ public sealed class JwtTokenService(IOptions<JwtOptions> options, TimeProvider? 
         }
     }
 
-    internal static TokenValidationParameters CreateValidationParameters(JwtOptions options, TimeProvider? timeProvider = null) => new()
+    internal static TokenValidationParameters CreateValidationParameters(JwtOptions options, TimeProvider? timeProvider = null)
     {
-        ValidateIssuerSigningKey = true,
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(options.SecretKey)),
-        ValidateIssuer = true,
-        ValidIssuer = options.Issuer,
-        ValidateAudience = true,
-        ValidAudience = options.Audience,
-        ValidateLifetime = true,
-        ClockSkew = TimeSpan.FromMinutes(options.ClockSkewMinutes),
-        NameClaimType = ClaimTypes.NameIdentifier,
-        RoleClaimType = ClaimTypes.Role
-    };
+        var clock = timeProvider ?? TimeProvider.System;
+        return new()
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(options.SecretKey)),
+            ValidateIssuer = true,
+            ValidIssuer = options.Issuer,
+            ValidateAudience = true,
+            ValidAudience = options.Audience,
+            ValidateLifetime = true,
+            RequireExpirationTime = true,
+            ClockSkew = TimeSpan.FromMinutes(options.ClockSkewMinutes),
+            LifetimeValidator = (notBefore, expires, _, parameters) =>
+            {
+                if (expires is null) return false;
+                var now = clock.GetUtcNow().UtcDateTime;
+                return (notBefore is null || notBefore <= now + parameters.ClockSkew)
+                    && expires >= now - parameters.ClockSkew;
+            },
+            NameClaimType = ClaimTypes.NameIdentifier,
+            RoleClaimType = ClaimTypes.Role
+        };
+    }
 
     private SymmetricSecurityKey GetKey()
     {
