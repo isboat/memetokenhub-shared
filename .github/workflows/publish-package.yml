@@ -58,8 +58,9 @@ jobs:
       - name: Publish to GitHub Packages
         env:
           NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.value }}
         run: >-
-          dotnet nuget push "artifacts/*.nupkg"
+          dotnet nuget push "artifacts/MemeTokenHub.Shared.${PACKAGE_VERSION}.nupkg"
           --api-key "$NUGET_AUTH_TOKEN"
           --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
           --skip-duplicate
