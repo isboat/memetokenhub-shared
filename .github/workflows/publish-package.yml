@@ -1,33 +1,54 @@
 name: Publish GitHub Package
 
 on:
-  release:
-    types:
-      - published
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
   packages: write
 
+concurrency:
+  group: publish-package
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+          source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
+
+      - name: Validate package credentials
+        shell: bash
+        run: |
+          if [[ -z "$NUGET_AUTH_TOKEN" ]]; then
+            echo "Configure the PACKAGES_TOKEN repository secret with a classic PAT that has write:packages scope." >&2
+            exit 1
+          fi
 
       - name: Validate release version
         id: version
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$(dotnet msbuild src/MemeTokenHub.Shared/MemeTokenHub.Shared.csproj -getProperty:Version -nologo)"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must be a semantic version such as v1.2.3 or v1.2.3-preview.1." >&2
+            echo "The project Version must be a semantic version such as 1.2.3 or 1.2.3-preview.1." >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/v$version"; then
+            echo "Release tag v$version already exists. Increment Version in the project before merging to main." >&2
             exit 1
           fi
           echo "value=$version" >> "$GITHUB_OUTPUT"
@@ -57,9 +78,20 @@ jobs:
 
       - name: Publish to GitHub Packages
         env:
-          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.value }}
         run: >-
-          dotnet nuget push "artifacts/*.nupkg"
+          dotnet nuget push "artifacts/MemeTokenHub.Shared.${PACKAGE_VERSION}.nupkg"
           --api-key "$NUGET_AUTH_TOKEN"
           --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
           --skip-duplicate
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.value }}
+        run: >-
+          gh release create "v${RELEASE_VERSION}"
+          artifacts/*.nupkg
+          --target "$GITHUB_SHA"
+          --title "v${RELEASE_VERSION}"
+          --generate-notes
