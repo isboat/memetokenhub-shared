@@ -2,6 +2,8 @@
 
 Reusable contracts and infrastructure for the MemeTokenHub backend microservices.
 
+The library targets .NET 10. Service repositories consuming the package must use a target framework compatible with `net10.0`.
+
 ## Included capabilities
 
 - Public DTOs, pagination, enums, and consistent community vocabulary.
