@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>MemeTokenHub.Shared</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.1.2</Version>
     <Authors>MemeTokenHub</Authors>
     <Description>Contracts and infrastructure primitives shared by MemeTokenHub backend services.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
