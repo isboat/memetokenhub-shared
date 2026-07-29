@@ -16,6 +16,8 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -28,6 +30,14 @@ jobs:
           dotnet-version: 10.0.x
           source-url: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
 
+      - name: Validate package credentials
+        shell: bash
+        run: |
+          if [[ -z "$NUGET_AUTH_TOKEN" ]]; then
+            echo "Configure the PACKAGES_TOKEN repository secret with a classic PAT that has write:packages scope." >&2
+            exit 1
+          fi
+
       - name: Validate release version
         id: version
         shell: bash
@@ -37,7 +47,7 @@ jobs:
             echo "The project Version must be a semantic version such as 1.2.3 or 1.2.3-preview.1." >&2
             exit 1
           fi
-          if git rev-parse "v$version" >/dev/null 2>&1; then
+          if git show-ref --verify --quiet "refs/tags/v$version"; then
             echo "Release tag v$version already exists. Increment Version in the project before merging to main." >&2
             exit 1
           fi
@@ -66,19 +76,8 @@ jobs:
           -p:PackageVersion=${{ steps.version.outputs.value }}
           -p:ContinuousIntegrationBuild=true
 
-      - name: Validate package credentials
-        env:
-          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
-        shell: bash
-        run: |
-          if [[ -z "$NUGET_AUTH_TOKEN" ]]; then
-            echo "Configure the PACKAGES_TOKEN repository secret with a classic PAT that has write:packages scope." >&2
-            exit 1
-          fi
-
       - name: Publish to GitHub Packages
         env:
-          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
           PACKAGE_VERSION: ${{ steps.version.outputs.value }}
         run: >-
           dotnet nuget push "artifacts/MemeTokenHub.Shared.${PACKAGE_VERSION}.nupkg"
