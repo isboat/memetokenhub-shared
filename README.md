@@ -1,0 +1,2 @@
+# memetokenhub-shared
+memetokenhub shared
