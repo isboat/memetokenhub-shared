@@ -46,7 +46,7 @@ jobs:
           echo "Generated package version: $package_version"
 
       - name: Restore dependencies
-        run: dotnet restore MemeTokenHub.Shared.sln --configfile NuGet.config
+        run: dotnet restore MemeTokenHub.Shared.sln
 
       - name: Build
         run: >-
