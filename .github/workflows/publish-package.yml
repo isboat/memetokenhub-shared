@@ -146,7 +146,7 @@ jobs:
         run: >-
           dotnet nuget push "artifacts/*.nupkg"
           --api-key "$NUGET_AUTH_TOKEN"
-          --source github
+          --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
           --skip-duplicate
 
       - name: Create GitHub release
