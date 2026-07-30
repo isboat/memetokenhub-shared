@@ -30,7 +30,7 @@ Yes. `MemeTokenHub.Shared` is configured as a NuGet package that can be publishe
 
 Publishing is release-driven. Create a GitHub release with a semantic-version tag such as `v1.0.0`; the `Publish GitHub Package` workflow builds and tests the solution, packs that version, and publishes it to the repository owner's NuGet registry using the workflow's short-lived `GITHUB_TOKEN`.
 
-### Consume the package from another service
+### Consume the package from another service.
 
 GitHub Packages requires authentication, including for public NuGet packages. Create a GitHub personal access token with `read:packages`, expose it to the service repository as `GITHUB_PACKAGES_TOKEN`, and add the owner feed without committing the token:
 
